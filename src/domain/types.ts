@@ -54,6 +54,8 @@ export interface GuessWordData {
   kind: "guess-word";
   answer: string;
   category: string;
+  /** Petunjuk deskriptif (opsional agar sesi lama di Redis tetap terbaca). */
+  clue?: string;
   hintLevel: number;
   attempts: number;
 }
@@ -75,6 +77,7 @@ export interface HangmanData {
   kind: "hangman";
   answer: string;
   category: string;
+  clue?: string;
   guessedLetters: string[];
   wrongGuesses: number;
   maxWrongGuesses: number;
@@ -85,6 +88,7 @@ export interface WordScrambleData {
   answer: string;
   scrambled: string;
   category: string;
+  clue?: string;
   hintLevel: number;
   attempts: number;
 }

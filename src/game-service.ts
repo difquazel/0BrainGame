@@ -6,7 +6,10 @@ import {
   type GameResult,
   type GameSession,
   type GameType,
+  type GuessWordData,
+  type HangmanData,
   type Player,
+  type WordScrambleData,
   type TriviaData,
   type WerewolfData,
   type WerewolfRole,
@@ -90,6 +93,41 @@ function arraysEqual(a: readonly string[], b: readonly string[]): boolean {
   return a.length === b.length && a.every((value, index) => value === b[index]);
 }
 
+/** Jarak edit (Levenshtein) — dipakai untuk mendeteksi jawaban yang "hampir benar". */
+export function editDistance(a: string, b: string): number {
+  const left = Array.from(a);
+  const right = Array.from(b);
+  let previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+  for (let i = 1; i <= left.length; i += 1) {
+    const current = [i];
+    for (let j = 1; j <= right.length; j += 1) {
+      const cost = left[i - 1] === right[j - 1] ? 0 : 1;
+      current[j] = Math.min(previous[j]! + 1, current[j - 1]! + 1, previous[j - 1]! + cost);
+    }
+    previous = current;
+  }
+  return previous[right.length]!;
+}
+
+/** Jawaban dianggap "hampir benar" bila hanya beda 1 huruf (atau 2 untuk kata panjang). */
+function isNearMiss(submitted: string, answer: string): boolean {
+  const tolerance = answer.length >= 7 ? 2 : 1;
+  return editDistance(submitted, answer) <= tolerance;
+}
+
+/** Acak urutan pilihan supaya posisi jawaban benar tidak bisa ditebak. */
+export function shuffleQuestion(question: TriviaQuestion): TriviaQuestion {
+  const correct = question.choices[question.correctIndex]!;
+  const choices = shuffled(question.choices) as unknown as TriviaQuestion["choices"];
+  return { ...question, choices, correctIndex: choices.indexOf(correct) };
+}
+
+/** Berapa soal/kata terakhir per channel yang diingat agar tidak cepat terulang. */
+const RECENT_TRIVIA_LIMIT = 100;
+const RECENT_WORD_LIMIT = 60;
+/** Setiap berapa kali salah tebak bot otomatis memberi hint. */
+const AUTO_HINT_EVERY = 3;
+
 /** Bungkus daftar pemenang menjadi field pointAwards (1 poin per pemenang), atau kosong bila tidak ada. */
 function winnerPointAwards(winnerIds: readonly string[]): Pick<GameEvent, "pointAwards"> {
   return winnerIds.length > 0 ? { pointAwards: winnerIds.map((userId) => ({ userId, amount: 1 })) } : {};
@@ -104,6 +142,8 @@ export interface PendingWerewolfRoles {
 export interface ChannelGameState {
   session?: GameSession;
   pendingWerewolf?: PendingWerewolfRoles;
+  /** Soal/kata yang baru saja keluar di channel ini ("t:<soal>" / "w:<kata>"). */
+  recent?: string[];
 }
 
 export class GameService {
@@ -113,20 +153,69 @@ export class GameService {
    * pemain di lobby tidak berubah, supaya pemain tidak mendapat role yang berbeda-beda di
    * setiap percobaan. */
   private readonly pendingWerewolfRoles = new Map<string, PendingWerewolfRoles>();
+  private readonly recentByChannel = new Map<string, string[]>();
 
   /** Di Vercel setiap request berjalan terpisah, jadi state satu channel dimuat dari database ke sini. */
   public loadChannel(channelId: string, state: ChannelGameState): void {
     if (state.session) this.sessionsByChannel.set(channelId, state.session);
     if (state.pendingWerewolf) this.pendingWerewolfRoles.set(channelId, state.pendingWerewolf);
+    if (state.recent) this.recentByChannel.set(channelId, [...state.recent]);
   }
 
   public exportChannel(channelId: string): ChannelGameState {
     const state: ChannelGameState = {};
     const session = this.sessionsByChannel.get(channelId);
     const pending = this.pendingWerewolfRoles.get(channelId);
+    const recent = this.recentByChannel.get(channelId);
     if (session) state.session = session;
     if (pending) state.pendingWerewolf = pending;
+    if (recent && recent.length > 0) state.recent = recent;
     return state;
+  }
+
+  private remember(channelId: string, key: string, limit: number): void {
+    const prefix = key.slice(0, 2);
+    const recent = (this.recentByChannel.get(channelId) ?? []).filter((item) => item !== key);
+    recent.push(key);
+    // Batasi per jenis (soal trivia vs kata) supaya satu jenis tidak menggusur yang lain.
+    const sameKind = recent.filter((item) => item.startsWith(prefix));
+    const overflow = new Set(sameKind.slice(0, Math.max(0, sameKind.length - limit)));
+    this.recentByChannel.set(channelId, recent.filter((item) => !overflow.has(item)));
+  }
+
+  private recentSet(channelId: string): Set<string> {
+    return new Set(this.recentByChannel.get(channelId) ?? []);
+  }
+
+  /** Pilih kata yang belum keluar baru-baru ini di channel ini. */
+  private pickWord(channelId: string): WordEntry {
+    const recent = this.recentSet(channelId);
+    const fresh = WORDS.filter((word) => !recent.has(`w:${word.answer}`));
+    const word = choose<WordEntry>(fresh.length > 0 ? fresh : WORDS);
+    this.remember(channelId, `w:${word.answer}`, RECENT_WORD_LIMIT);
+    return word;
+  }
+
+  /** Pilih soal trivia yang belum keluar di sesi/channel ini, dan sebisa mungkin beda kategori dari soal sebelumnya. */
+  private pickTrivia(channelId: string, usedPrompts: readonly string[], previousCategory?: string): TriviaQuestion {
+    const recent = this.recentSet(channelId);
+    const unusedInSession = TRIVIA_QUESTIONS.filter((question) => !usedPrompts.includes(question.prompt));
+    const pool = unusedInSession.length > 0 ? unusedInSession : TRIVIA_QUESTIONS;
+    const fresh = pool.filter((question) => !recent.has(`t:${question.prompt}`));
+    const candidates = fresh.length > 0 ? fresh : pool;
+    const otherCategory = candidates.filter((question) => question.category !== previousCategory);
+    const question = choose<TriviaQuestion>(otherCategory.length > 0 ? otherCategory : candidates);
+    this.remember(channelId, `t:${question.prompt}`, RECENT_TRIVIA_LIMIT);
+    return shuffleQuestion(question);
+  }
+
+  private hintFor(data: GuessWordData | WordScrambleData): string {
+    const { answer } = data;
+    const revealCount = Math.min(answer.length, Math.max(1, data.hintLevel + 1));
+    data.hintLevel = revealCount;
+    const hint = `${answer.slice(0, revealCount)}${" _".repeat(Math.max(0, answer.length - revealCount))}`;
+    const clue = data.kind === "word-scramble" && data.clue ? `\n🧩 Petunjuk: *${data.clue}*` : "";
+    return `💡 Hint: **${hint}**${clue}`;
   }
 
   public findByChannel(channelId: string): GameSession | undefined {
@@ -263,11 +352,7 @@ export class GameService {
       return { ok: false, error: "Game ini tidak mendukung hint." };
     }
 
-    const { answer } = session.data;
-    const revealCount = Math.min(answer.length, Math.max(1, session.data.hintLevel + 1));
-    session.data.hintLevel = revealCount;
-    const hint = `${answer.slice(0, revealCount)}${" _".repeat(Math.max(0, answer.length - revealCount))}`;
-    return { ok: true, events: [{ text: `💡 Hint: **${hint}**` }] };
+    return { ok: true, events: [{ text: this.hintFor(session.data) }] };
   }
 
   public submitTextAnswer(channelId: string, actorId: string, answer: string): GameResult {
@@ -279,23 +364,51 @@ export class GameService {
     if (!submitted) return { ok: false, error: "Jawaban tidak boleh kosong." };
 
     if (session.data.kind === "guess-word" || session.data.kind === "word-scramble") {
-      session.data.attempts += 1;
-      if (submitted !== normalize(session.data.answer)) {
-        return { ok: true, events: [{ text: `<@${actorId}> belum tepat. Coba lagi! (percobaan ke-${session.data.attempts})` }] };
+      const data = session.data;
+      data.attempts += 1;
+      const target = normalize(data.answer);
+      if (submitted !== target) {
+        const lines = [
+          isNearMiss(submitted, target)
+            ? `🔥 <@${actorId}> **hampir benar!** Tinggal sedikit lagi. (percobaan ke-${data.attempts})`
+            : `<@${actorId}> belum tepat. Coba lagi! (percobaan ke-${data.attempts})`,
+        ];
+        // Bot membantu otomatis bila pemain kesulitan.
+        if (data.attempts % AUTO_HINT_EVERY === 0 && data.hintLevel < target.length - 1) {
+          lines.push(`🤖 Sudah ${data.attempts} kali salah, bot kasih bantuan:\n${this.hintFor(data)}`);
+        }
+        return { ok: true, events: [{ text: lines.join("\n") }] };
       }
-      return this.finish(session, [actorId], `🎉 <@${actorId}> menebak dengan benar: **${session.data.answer}**!`);
+      return this.finish(session, [actorId], `🎉 <@${actorId}> menebak dengan benar: **${data.answer}**! (${data.attempts} percobaan)`);
     }
 
     if (session.data.kind === "hangman") {
       const data = session.data;
-      if (Array.from(submitted).length !== 1) {
-        return { ok: false, error: "Untuk Hangman, kirim satu huruf melalui /game answer." };
+      const target = normalize(data.answer);
+      // Tebak langsung satu kata utuh: benar = menang, salah = kena 1 kesalahan.
+      if (Array.from(submitted).length > 1) {
+        if (submitted === target) {
+          return this.finish(
+            session,
+            session.players.map(({ id }) => id),
+            `🎯 <@${actorId}> menebak kata utuh dengan tepat: **${data.answer}**! Semua pemain selamat.`,
+          );
+        }
+        data.wrongGuesses += 1;
+        if (data.wrongGuesses >= data.maxWrongGuesses) {
+          return this.finish(session, [], `💀 Tebakan **${answer}** salah dan kesempatan habis. Jawabannya adalah **${data.answer}**.`);
+        }
+        const near = isNearMiss(submitted, target) ? " 🔥 Hampir benar!" : "";
+        return {
+          ok: true,
+          events: [{ text: `<@${actorId}> menebak kata **${answer}**: ❌ salah.${near}\n${maskedWord(data.answer, data.guessedLetters)}\nKesalahan: **${data.wrongGuesses}/${data.maxWrongGuesses}**.${this.hangmanClue(data)}` }],
+        };
       }
       if (data.guessedLetters.includes(submitted)) {
         return { ok: false, error: "Huruf itu sudah pernah ditebak." };
       }
       data.guessedLetters.push(submitted);
-      const correct = normalize(data.answer).includes(submitted);
+      const correct = target.includes(submitted);
       if (!correct) data.wrongGuesses += 1;
 
       const isSolved = Array.from(normalize(data.answer)).every((letter) => data.guessedLetters.includes(letter));
@@ -314,7 +427,7 @@ export class GameService {
         ok: true,
         events: [
           {
-            text: `<@${actorId}> menebak **${answer}**: ${result}.\n${maskedWord(data.answer, data.guessedLetters)}\nKesalahan: **${data.wrongGuesses}/${data.maxWrongGuesses}**.`,
+            text: `<@${actorId}> menebak **${answer}**: ${result}.\n${maskedWord(data.answer, data.guessedLetters)}\nKesalahan: **${data.wrongGuesses}/${data.maxWrongGuesses}**.${correct ? "" : this.hangmanClue(data)}`,
           },
         ],
       };
@@ -562,15 +675,27 @@ export class GameService {
   }
 
   private startGuessWord(session: GameSession): GameResult {
-    const word = choose<WordEntry>(WORDS);
-    session.data = { kind: "guess-word", answer: word.answer, category: word.category, hintLevel: 0, attempts: 0 };
+    const word = this.pickWord(session.channelId);
+    session.data = { kind: "guess-word", answer: word.answer, category: word.category, clue: word.clue, hintLevel: 0, attempts: 0 };
     session.phase = "playing";
-    return { ok: true, events: [{ text: `🔤 **Tebak Kata** dimulai! Kategori: **${word.category}**. Kirim jawaban dengan **/game answer teks:…**.` }] };
+    return {
+      ok: true,
+      events: [
+        {
+          text: `🔤 **Tebak Kata** dimulai!\n📂 Kategori: **${word.category}**\n🧩 Petunjuk: *${word.clue}*\n🔢 Jumlah huruf: **${Array.from(word.answer).length}**\nKirim jawaban dengan **/game answer teks:…**. Bot memberi hint otomatis setiap ${AUTO_HINT_EVERY}x salah.`,
+        },
+      ],
+    };
+  }
+
+  private hangmanClue(data: HangmanData): string {
+    // Petunjuk deskriptif baru muncul setelah 3 kesalahan, supaya tetap menantang.
+    return data.clue && data.wrongGuesses === 3 ? `\n🧩 Bot kasih petunjuk: *${data.clue}*` : "";
   }
 
   private startTrivia(session: GameSession): GameResult {
     const totalRounds = Math.min(TRIVIA_ROUNDS, TRIVIA_QUESTIONS.length);
-    const question = choose<TriviaQuestion>(TRIVIA_QUESTIONS);
+    const question = this.pickTrivia(session.channelId, []);
     session.data = {
       kind: "trivia",
       prompt: question.prompt,
@@ -588,27 +713,36 @@ export class GameService {
   }
 
   private startHangman(session: GameSession): GameResult {
-    const word = choose<WordEntry>(WORDS);
-    session.data = { kind: "hangman", answer: word.answer, category: word.category, guessedLetters: [], wrongGuesses: 0, maxWrongGuesses: 6 };
+    const word = this.pickWord(session.channelId);
+    session.data = { kind: "hangman", answer: word.answer, category: word.category, clue: word.clue, guessedLetters: [], wrongGuesses: 0, maxWrongGuesses: 6 };
     session.phase = "playing";
-    return { ok: true, events: [{ text: `🪢 **Hangman** dimulai! Kategori: **${word.category}**.\n${maskedWord(word.answer, [])}\nTebak satu huruf menggunakan **/game answer teks:…**.` }] };
+    return {
+      ok: true,
+      events: [
+        {
+          text: `🪢 **Hangman** dimulai! Kategori: **${word.category}** (${Array.from(word.answer).length} huruf).\n${maskedWord(word.answer, [])}\nTebak satu huruf dengan **/game answer teks:…**, atau tebak langsung kata utuhnya (salah = 1 kesalahan).`,
+        },
+      ],
+    };
   }
 
   private startWordScramble(session: GameSession): GameResult {
-    const word = choose<WordEntry>(WORDS);
+    const word = this.pickWord(session.channelId);
     const scrambled = scramble(word.answer);
-    session.data = { kind: "word-scramble", answer: word.answer, scrambled, category: word.category, hintLevel: 0, attempts: 0 };
+    session.data = { kind: "word-scramble", answer: word.answer, scrambled, category: word.category, clue: word.clue, hintLevel: 0, attempts: 0 };
     session.phase = "playing";
-    return { ok: true, events: [{ text: `🔀 **Acak Kata** dimulai! Kategori: **${word.category}**. Susun kata ini: **${scrambled}**. Kirim jawaban dengan **/game answer teks:…**.` }] };
+    return {
+      ok: true,
+      events: [
+        {
+          text: `🔀 **Acak Kata** dimulai! Kategori: **${word.category}**.\nSusun kata ini: **${scrambled.toUpperCase()}**\nKirim jawaban dengan **/game answer teks:…**. Butuh bantuan? Tekan **Minta hint**.`,
+        },
+      ],
+    };
   }
 
   private triviaRoundText(data: TriviaData): string {
     return `🧠 **Trivia** — Ronde **${data.round}/${data.totalRounds}**\n📚 Kategori: *${data.category}*\n${data.prompt}\nA. ${data.choices[0]}\nB. ${data.choices[1]}\nC. ${data.choices[2]}\nD. ${data.choices[3]}\nPilih jawaban lewat tombol di bawah!`;
-  }
-
-  private pickNextTriviaQuestion(usedPrompts: readonly string[]): TriviaQuestion {
-    const remaining = TRIVIA_QUESTIONS.filter((question) => !usedPrompts.includes(question.prompt));
-    return remaining.length > 0 ? choose(remaining) : choose(TRIVIA_QUESTIONS);
   }
 
   private resolveTriviaRound(session: GameSession): GameResult {
@@ -637,7 +771,7 @@ export class GameService {
       return { ok: true, events };
     }
 
-    const next = this.pickNextTriviaQuestion(data.usedPrompts);
+    const next = this.pickTrivia(session.channelId, data.usedPrompts, data.category);
     data.prompt = next.prompt;
     data.category = next.category;
     data.choices = next.choices;
@@ -739,6 +873,12 @@ export class GameService {
     }
     if (session.data.kind === "trivia" && session.phase === "playing") {
       return `Ronde: ${session.data.round}/${session.data.totalRounds} · Kategori: ${session.data.category}`;
+    }
+    if (session.data.kind === "guess-word" && session.phase === "playing") {
+      return `Kategori: ${session.data.category}${session.data.clue ? ` · Petunjuk: *${session.data.clue}*` : ""} · Percobaan: ${session.data.attempts}`;
+    }
+    if (session.data.kind === "word-scramble" && session.phase === "playing") {
+      return `Susun: **${session.data.scrambled.toUpperCase()}** · Kategori: ${session.data.category} · Percobaan: ${session.data.attempts}`;
     }
     if (session.data.kind === "werewolf" && session.phase !== "lobby") {
       return `Pemain aktif: ${session.data.aliveIds.map((id) => `<@${id}>`).join(", ")}`;

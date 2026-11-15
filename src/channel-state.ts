@@ -38,6 +38,8 @@ export interface ChannelOutcome<T> {
 
 /** Sesi yang ditinggal begitu saja otomatis terhapus setelah 2 hari. */
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 2;
+/** Riwayat soal per channel disimpan 30 hari. */
+const RECENT_TTL_SECONDS = 60 * 60 * 24 * 30;
 
 const channelKey = (channelId: string): string => `channel:${channelId}`;
 
@@ -128,6 +130,9 @@ export async function withChannel<T>(channelId: string, action: (games: GameServ
       if (timer) next.timer = timer;
       if (recorded) next.recorded = true;
       await kv.set(channelKey(channelId), JSON.stringify(next), SESSION_TTL_SECONDS);
+    } else if (after.recent) {
+      // Sesi ditutup, tapi daftar soal/kata yang baru keluar tetap diingat agar game berikutnya tidak mengulang.
+      await kv.set(channelKey(channelId), JSON.stringify({ recent: after.recent }), RECENT_TTL_SECONDS);
     } else {
       await kv.del(channelKey(channelId));
     }

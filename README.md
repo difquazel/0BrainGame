@@ -8,7 +8,9 @@ Discord *HTTP Interactions* (bukan koneksi Gateway yang harus menyala terus).
 - **Werewolf**: role rahasia dikirim lewat DM dengan alur yang aman — role dihitung, DM dicoba dikirim ke **semua** pemain terlebih dahulu, dan sesi baru benar-benar dimulai jika semua DM berhasil. Jika ada yang gagal (DM tertutup), game tidak dimulai dan host mendapat daftar jelas siapa yang perlu membuka DM-nya; percobaan ulang tidak mengacak ulang role pemain yang sudah menerimanya. Pemain juga bisa memakai `/game myrole` kapan saja untuk meminta role dikirim ulang.
 - Fase malam Werewolf otomatis lanjut lebih cepat begitu semua aksi yang dibutuhkan (Werewolf, Seer, Doctor bila hidup) sudah masuk — tidak perlu menunggu penuh timer.
 - **Moderator: hanya bot AI.** Bot yang mengatur seluruh alur malam/siang/voting secara otomatis; host cukup membuat, memulai, dan menutup sesi.
-- **Trivia** 5 ronde per sesi (40+ soal), **Tebak Kata**, **Hangman**, **Acak Kata** (32 kata).
+- **Trivia** 5 ronde per sesi dari **205 soal** di 13 kategori (Sains, Sejarah, Geografi, Budaya, Logika, dll.). Urutan pilihan A–D diacak, setiap ronde diusahakan beda kategori, dan soal yang baru keluar di channel itu tidak diulang (diingat 30 hari).
+- **Tebak Kata**, **Hangman**, **Acak Kata** dari **125 kata**, masing-masing dengan petunjuk deskriptif.
+- **Bot lebih pintar**: memberi tahu bila jawaban *hampir benar* (beda 1–2 huruf), memberi hint otomatis setiap 3x salah, Hangman bisa menebak kata utuh, dan petunjuk Hangman muncul setelah 3 kesalahan.
 - **Sistem level & progress bar**: menang atau menjawab benar memberi **+1 XP**. Setiap 10 XP naik satu level, maksimal **Level 99**.
 - `/help`, `/ping`, `/level`, `/leaderboard`, tombol Gabung/Keluar/Mulai/Hint/pilihan Trivia.
 

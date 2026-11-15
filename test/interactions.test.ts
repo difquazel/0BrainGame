@@ -150,7 +150,9 @@ test("Trivia lengkap lewat slash command + tombol, XP tersimpan di Redis", async
 
   const stopped = await game(0, "stop");
   assert.match(stopped.data.embeds[0].description, /ditutup/);
-  assert.equal(stored(), undefined);
+  assert.equal(stored().session, undefined);
+  // Soal yang sudah keluar tetap diingat untuk game berikutnya di channel ini.
+  assert.ok(stored().recent.filter((key: string) => key.startsWith("t:")).length >= 5);
 });
 
 async function werewolfLobby(count: number): Promise<void> {

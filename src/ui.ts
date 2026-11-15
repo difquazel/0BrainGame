@@ -1,8 +1,9 @@
 import type { ActionRow, Embed } from "./discord-api.js";
 import type { GameSession, GameType } from "./domain/types.js";
+import { TRIVIA_QUESTIONS, WORDS } from "./game-content.js";
 import { GameService } from "./game-service.js";
 
-export const BOT_VERSION = "3.0.0";
+export const BOT_VERSION = "3.1.0";
 
 const labels = new GameService();
 
@@ -64,7 +65,7 @@ export function buildHelpEmbed(): Embed {
       },
       {
         name: "🕹️ Pilihan game",
-        value: "**Werewolf** — role rahasia & voting\n**Tebak Kata** — tebak berdasarkan kategori\n**Trivia** — 5 ronde soal pilihan A–D\n**Hangman** — selamatkan kata\n**Acak Kata** — susun kata secepatnya",
+        value: `**Werewolf** — role rahasia & voting\n**Tebak Kata** — tebak dari petunjuk & kategori\n**Trivia** — 5 ronde dari ${TRIVIA_QUESTIONS.length} soal, ${new Set(TRIVIA_QUESTIONS.map((question) => question.category)).size} kategori\n**Hangman** — tebak huruf atau langsung kata utuh\n**Acak Kata** — susun kata secepatnya\n_${WORDS.length} kata · soal yang baru keluar tidak diulang · bot memberi tahu bila jawabanmu hampir benar_`,
       },
       {
         name: "🤖 Moderator",
