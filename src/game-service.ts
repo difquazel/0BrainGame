@@ -95,13 +95,39 @@ function winnerPointAwards(winnerIds: readonly string[]): Pick<GameEvent, "point
   return winnerIds.length > 0 ? { pointAwards: winnerIds.map((userId) => ({ userId, amount: 1 })) } : {};
 }
 
+export interface PendingWerewolfRoles {
+  playerIds: string[];
+  roles: Record<string, WerewolfRole>;
+}
+
+/** Keadaan satu channel yang bisa disimpan ke database lalu dimuat ulang di request berikutnya. */
+export interface ChannelGameState {
+  session?: GameSession;
+  pendingWerewolf?: PendingWerewolfRoles;
+}
+
 export class GameService {
   private readonly sessionsByChannel = new Map<string, GameSession>();
   /** Role yang sudah dihitung untuk lobby Werewolf tertentu, menunggu DM dikonfirmasi terkirim.
    * Dipertahankan antar percobaan /game start yang gagal (mis. DM tertutup) selama susunan
    * pemain di lobby tidak berubah, supaya pemain tidak mendapat role yang berbeda-beda di
    * setiap percobaan. */
-  private readonly pendingWerewolfRoles = new Map<string, { playerIds: string[]; roles: Record<string, WerewolfRole> }>();
+  private readonly pendingWerewolfRoles = new Map<string, PendingWerewolfRoles>();
+
+  /** Di Vercel setiap request berjalan terpisah, jadi state satu channel dimuat dari database ke sini. */
+  public loadChannel(channelId: string, state: ChannelGameState): void {
+    if (state.session) this.sessionsByChannel.set(channelId, state.session);
+    if (state.pendingWerewolf) this.pendingWerewolfRoles.set(channelId, state.pendingWerewolf);
+  }
+
+  public exportChannel(channelId: string): ChannelGameState {
+    const state: ChannelGameState = {};
+    const session = this.sessionsByChannel.get(channelId);
+    const pending = this.pendingWerewolfRoles.get(channelId);
+    if (session) state.session = session;
+    if (pending) state.pendingWerewolf = pending;
+    return state;
+  }
 
   public findByChannel(channelId: string): GameSession | undefined {
     return this.sessionsByChannel.get(channelId);
@@ -397,6 +423,9 @@ export class GameService {
       return { ok: true, events };
     }
     session.phase = "day";
+    // Reset tahap siang; tanpa ini, setelah voting pertama bot langsung melompat ke malam
+    // berikutnya di setiap siang dan voting tidak pernah dibuka lagi.
+    data.dayStage = "discussion";
     events.push({ text: "💬 Fase **siang** dimulai. Diskusikan kecurigaanmu — voting akan dibuka otomatis oleh bot." });
     return { ok: true, events };
   }

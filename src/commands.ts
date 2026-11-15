@@ -1,4 +1,8 @@
-import { SlashCommandBuilder } from "discord.js";
+/** Definisi slash command (format JSON Discord API) — didaftarkan lewat `npm run register`. */
+
+const SUB_COMMAND = 1;
+const STRING = 3;
+const USER = 6;
 
 const gameChoices = [
   { name: "Werewolf", value: "werewolf" },
@@ -6,51 +10,46 @@ const gameChoices = [
   { name: "Trivia", value: "trivia" },
   { name: "Hangman", value: "hangman" },
   { name: "Acak Kata", value: "word-scramble" },
-] as const;
+];
+
+function sub(name: string, description: string, options: unknown[] = []) {
+  return { type: SUB_COMMAND, name, description, options };
+}
 
 export const commandData = [
-  new SlashCommandBuilder()
-    .setName("game")
-    .setDescription("Kelola game text-based di channel ini")
-    .addSubcommand((command) =>
-      command
-        .setName("create")
-        .setDescription("Buat lobby game baru (dimoderasi otomatis oleh bot)")
-        .addStringOption((option) => option.setName("jenis").setDescription("Jenis game").setRequired(true).addChoices(...gameChoices)),
-    )
-    .addSubcommand((command) => command.setName("join").setDescription("Gabung ke lobby di channel ini"))
-    .addSubcommand((command) => command.setName("leave").setDescription("Keluar dari lobby sebelum game dimulai"))
-    .addSubcommand((command) => command.setName("start").setDescription("Mulai game"))
-    .addSubcommand((command) => command.setName("status").setDescription("Lihat status game"))
-    .addSubcommand((command) => command.setName("stop").setDescription("Batalkan atau tutup game (host saja)"))
-    .addSubcommand((command) => command.setName("hint").setDescription("Berikan hint untuk Tebak Kata atau Acak Kata"))
-    .addSubcommand((command) =>
-      command
-        .setName("answer")
-        .setDescription("Kirim jawaban atau satu huruf untuk Hangman")
-        .addStringOption((option) => option.setName("teks").setDescription("Jawabanmu").setRequired(true)),
-    )
-    .addSubcommand((command) =>
-      command
-        .setName("night")
-        .setDescription("Kirim aksi malam Werewolf")
-        .addUserOption((option) => option.setName("target").setDescription("Pemain target").setRequired(true)),
-    )
-    .addSubcommand((command) =>
-      command
-        .setName("vote")
-        .setDescription("Berikan vote Werewolf")
-        .addUserOption((option) => option.setName("pemain").setDescription("Pemain yang dipilih").setRequired(true)),
-    )
-    .addSubcommand((command) => command.setName("myrole").setDescription("Kirim ulang role rahasia Werewolf-mu lewat DM")),
-  new SlashCommandBuilder()
-    .setName("level")
-    .setDescription("Cek level dan progress XP kamu (atau pemain lain)")
-    .addUserOption((option) => option.setName("pemain").setDescription("Cek level pemain lain (opsional)")),
-  new SlashCommandBuilder()
-    .setName("leaderboard")
-    .setDescription("Lihat papan peringkat level pemain")
-    .addStringOption((option) => option.setName("jenis").setDescription("Saring berdasarkan game").addChoices(...gameChoices)),
-  new SlashCommandBuilder().setName("help").setDescription("Lihat panduan dan daftar fitur bot"),
-  new SlashCommandBuilder().setName("ping").setDescription("Cek status dan respons bot"),
-].map((command) => command.toJSON());
+  {
+    name: "game",
+    description: "Kelola game text-based di channel ini",
+    // Hanya di server (bukan DM).
+    contexts: [0],
+    options: [
+      sub("create", "Buat lobby game baru (dimoderasi otomatis oleh bot)", [
+        { type: STRING, name: "jenis", description: "Jenis game", required: true, choices: gameChoices },
+      ]),
+      sub("join", "Gabung ke lobby di channel ini"),
+      sub("leave", "Keluar dari lobby sebelum game dimulai"),
+      sub("start", "Mulai game"),
+      sub("status", "Lihat status game"),
+      sub("stop", "Batalkan atau tutup game (host saja)"),
+      sub("hint", "Berikan hint untuk Tebak Kata atau Acak Kata"),
+      sub("answer", "Kirim jawaban atau satu huruf untuk Hangman", [
+        { type: STRING, name: "teks", description: "Jawabanmu", required: true },
+      ]),
+      sub("night", "Kirim aksi malam Werewolf", [{ type: USER, name: "target", description: "Pemain target", required: true }]),
+      sub("vote", "Berikan vote Werewolf", [{ type: USER, name: "pemain", description: "Pemain yang dipilih", required: true }]),
+      sub("myrole", "Kirim ulang role rahasia Werewolf-mu lewat DM"),
+    ],
+  },
+  {
+    name: "level",
+    description: "Cek level dan progress XP kamu (atau pemain lain)",
+    options: [{ type: USER, name: "pemain", description: "Cek level pemain lain (opsional)" }],
+  },
+  {
+    name: "leaderboard",
+    description: "Lihat papan peringkat level pemain",
+    options: [{ type: STRING, name: "jenis", description: "Saring berdasarkan game", choices: gameChoices }],
+  },
+  { name: "help", description: "Lihat panduan dan daftar fitur bot" },
+  { name: "ping", description: "Cek status dan respons bot" },
+];

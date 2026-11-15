@@ -1,6 +1,5 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
 import type { GameSession, GameType, Player } from "./domain/types.js";
+import { withLock, type KV } from "./kv.js";
 
 export const MAX_LEVEL = 99;
 export const XP_PER_LEVEL = 10;
@@ -12,10 +11,6 @@ export interface Profile {
   wins: number;
   xp: number;
   byGame: Partial<Record<GameType, { played: number; wins: number }>>;
-}
-
-interface ProfileFile {
-  profiles: Record<string, Profile>;
 }
 
 export interface LevelProgress {
@@ -52,101 +47,87 @@ export function levelSummaryText(xp: number): string {
   return `Level **${progress.level}** ${bar} ${progress.intoLevel}/${progress.needed} XP`;
 }
 
-export class ProfileStore {
-  private readonly filePath: string;
-  private profiles: Record<string, Profile> = {};
-  private loaded = false;
+const PROFILES_KEY = "profiles";
 
-  public constructor(dataDirectory: string) {
-    this.filePath = resolve(dataDirectory, "profiles.json");
+function emptyProfile(player: Player): Profile {
+  return { id: player.id, displayName: player.displayName, gamesPlayed: 0, wins: 0, xp: 0, byGame: {} };
+}
+
+function parseProfile(raw: string | null | undefined): Profile | null {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as Profile;
+  } catch {
+    return null;
   }
+}
 
-  public async load(): Promise<void> {
-    if (this.loaded) return;
-    await mkdir(dirname(this.filePath), { recursive: true });
-    try {
-      const parsed = JSON.parse(await readFile(this.filePath, "utf8")) as Partial<ProfileFile>;
-      this.profiles = parsed.profiles ?? {};
-    } catch (error: unknown) {
-      const code = typeof error === "object" && error !== null && "code" in error ? error.code : undefined;
-      if (code !== "ENOENT") {
-        console.warn("Profil lama tidak dapat dibaca; file statistik baru akan dibuat.");
-      }
-      this.profiles = {};
-    }
-    this.loaded = true;
+function byRanking(left: Profile, right: Profile): number {
+  return right.xp - left.xp || right.wins - left.wins || left.displayName.localeCompare(right.displayName);
+}
+
+/** Statistik pemain disimpan di Redis (hash "profiles": userId → JSON profil). */
+export class ProfileStore {
+  public constructor(private readonly kv: KV) {}
+
+  private async all(): Promise<Profile[]> {
+    const raw = await this.kv.hgetall(PROFILES_KEY);
+    return Object.values(raw)
+      .map((value) => parseProfile(value))
+      .filter((profile): profile is Profile => profile !== null);
   }
 
   /** Mencatat statistik menang/main per sesi game yang selesai (tidak mengubah XP; XP diberikan real-time lewat addPoints). */
   public async recordFinishedGame(session: GameSession): Promise<void> {
-    await this.load();
-    for (const player of session.players) {
-      const profile = this.getOrCreate(player);
-      const gameStat = profile.byGame[session.gameType] ?? { played: 0, wins: 0 };
-      const won = session.winnerIds.includes(player.id);
-      profile.gamesPlayed += 1;
-      gameStat.played += 1;
-      if (won) {
-        profile.wins += 1;
-        gameStat.wins += 1;
+    await withLock(this.kv, PROFILES_KEY, async () => {
+      const updates: Record<string, string> = {};
+      for (const player of session.players) {
+        const profile = parseProfile(await this.kv.hget(PROFILES_KEY, player.id)) ?? emptyProfile(player);
+        profile.displayName = player.displayName;
+        const gameStat = profile.byGame[session.gameType] ?? { played: 0, wins: 0 };
+        const won = session.winnerIds.includes(player.id);
+        profile.gamesPlayed += 1;
+        gameStat.played += 1;
+        if (won) {
+          profile.wins += 1;
+          gameStat.wins += 1;
+        }
+        profile.byGame[session.gameType] = gameStat;
+        updates[player.id] = JSON.stringify(profile);
       }
-      profile.byGame[session.gameType] = gameStat;
-    }
-    await this.save();
+      await this.kv.hset(PROFILES_KEY, updates);
+    }, 8000);
   }
 
   /** Menambahkan XP ke satu pemain (dipanggil saat menang atau berhasil menjawab). Mengembalikan info naik level untuk ditampilkan. */
   public async addPoints(player: Player, amount: number): Promise<{ profile: Profile; leveledUp: boolean; previousLevel: number }> {
-    await this.load();
-    const profile = this.getOrCreate(player);
-    const previousLevel = levelForXp(profile.xp);
-    profile.xp += amount;
-    const newLevel = levelForXp(profile.xp);
-    await this.save();
-    return { profile, leveledUp: newLevel > previousLevel, previousLevel };
+    return withLock(this.kv, PROFILES_KEY, async () => {
+      const profile = parseProfile(await this.kv.hget(PROFILES_KEY, player.id)) ?? emptyProfile(player);
+      profile.displayName = player.displayName;
+      const previousLevel = levelForXp(profile.xp);
+      profile.xp += amount;
+      await this.kv.hset(PROFILES_KEY, { [player.id]: JSON.stringify(profile) });
+      return { profile, leveledUp: levelForXp(profile.xp) > previousLevel, previousLevel };
+    }, 8000);
   }
 
   public async leaderboard(gameType?: GameType): Promise<readonly Profile[]> {
-    await this.load();
-    return Object.values(this.profiles)
+    return (await this.all())
       .filter((profile) => !gameType || (profile.byGame[gameType]?.played ?? 0) > 0)
-      .sort((left, right) => right.xp - left.xp || right.wins - left.wins || left.displayName.localeCompare(right.displayName))
+      .sort(byRanking)
       .slice(0, 10);
   }
 
   /** Mengambil profil satu pemain untuk /level. Bila belum pernah main, kembalikan pratinjau level 1 tanpa menyimpannya. */
   public async getProfile(player: Player): Promise<Profile> {
-    await this.load();
-    const existing = this.profiles[player.id];
-    if (existing) {
-      existing.displayName = player.displayName;
-      return existing;
-    }
-    return { id: player.id, displayName: player.displayName, gamesPlayed: 0, wins: 0, xp: 0, byGame: {} };
+    const existing = parseProfile(await this.kv.hget(PROFILES_KEY, player.id));
+    if (existing) return { ...existing, displayName: player.displayName };
+    return emptyProfile(player);
   }
 
   public async rank(player: Player): Promise<number | null> {
-    await this.load();
-    if (!this.profiles[player.id]) return null;
-    const ordered = Object.values(this.profiles).sort(
-      (left, right) => right.xp - left.xp || right.wins - left.wins || left.displayName.localeCompare(right.displayName),
-    );
+    const ordered = (await this.all()).sort(byRanking);
     const index = ordered.findIndex((profile) => profile.id === player.id);
     return index >= 0 ? index + 1 : null;
-  }
-
-  private getOrCreate(player: Player): Profile {
-    const current = this.profiles[player.id];
-    if (current) {
-      current.displayName = player.displayName;
-      return current;
-    }
-    const profile: Profile = { id: player.id, displayName: player.displayName, gamesPlayed: 0, wins: 0, xp: 0, byGame: {} };
-    this.profiles[player.id] = profile;
-    return profile;
-  }
-
-  private async save(): Promise<void> {
-    await writeFile(this.filePath, JSON.stringify({ profiles: this.profiles }, null, 2), "utf8");
   }
 }

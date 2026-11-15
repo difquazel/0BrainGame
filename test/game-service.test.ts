@@ -3,6 +3,7 @@ import test from "node:test";
 import { GameService } from "../src/game-service.js";
 import type { Player } from "../src/domain/types.js";
 import { levelForXp, xpProgress, progressBar, MAX_LEVEL, XP_PER_LEVEL, ProfileStore } from "../src/profile-store.js";
+import { MemoryKV } from "../src/kv.js";
 
 function player(index: number): Player {
   return { id: `player-${index}`, displayName: `Pemain ${index}` };
@@ -171,10 +172,7 @@ test("sistem level: naik tiap XP_PER_LEVEL poin dan dibatasi di MAX_LEVEL", () =
 });
 
 test("ProfileStore.getProfile & rank mendukung /level (termasuk pemain yang belum pernah main)", async () => {
-  const os = await import("node:os");
-  const path = await import("node:path");
-  const tmpDir = path.join(os.tmpdir(), `profile-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-  const store = new ProfileStore(tmpDir);
+  const store = new ProfileStore(new MemoryKV());
   const alice = player(101);
   const bob = player(102);
 

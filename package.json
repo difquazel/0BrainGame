@@ -1,23 +1,21 @@
 {
   "name": "discord-text-games-bot",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "private": true,
-  "description": "Bot Discord interaktif untuk Werewolf dan game text-based.",
+  "description": "Bot Discord interaktif untuk Werewolf dan game text-based (berjalan di Vercel).",
   "type": "module",
   "scripts": {
-    "dev": "tsx watch src/index.ts",
-    "start": "node dist/index.js",
-    "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test test/**/*.test.ts"
+    "test": "tsx --test test/**/*.test.ts",
+    "register": "tsx --env-file-if-exists=.env scripts/register-commands.ts",
+    "identify-once": "tsx --env-file-if-exists=.env scripts/identify-once.ts"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=22.0.0"
   },
   "dependencies": {
-    "discord.js": "^14.22.1",
-    "dotenv": "^17.2.2",
-    "zod": "^4.1.5"
+    "@upstash/redis": "^1.41.0",
+    "@vercel/functions": "^3.11.3"
   },
   "devDependencies": {
     "@types/node": "^24.3.0",
